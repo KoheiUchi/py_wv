@@ -2,7 +2,7 @@
 
 *[日本語版 README](README_jp.md)*
 
-A **single-file** waveform viewer for ngspice **binary `.raw`** files: load,
+A waveform viewer for ngspice **binary `.raw`** files: load,
 overlay, split into stacked panes, and take two-point measurements. Built with
 Python + pyqtgraph (PyQt6).
 
@@ -126,6 +126,12 @@ B (cyan) are used to position the points.
     line automatically; press the button to commit a new position.
   - Dragging the circle or pressing the button switches **Ref** to `Cursor`
     automatically.
+- **Bring line A/B into view** — when a cursor's vertical line has been panned
+  or zoomed off-screen, its **"Bring line A/B into view"** button (below the
+  "Set to cursor A/B" button) recentres the line on the currently visible X
+  window. The button
+  is **enabled only while that line is off-screen**, so it signals when the
+  cursor has drifted out of view.
 - Results show **Δt**, **1/Δt**, and **ΔV / ΔI** (chosen automatically from the
   two points' quantities). Crossings are linearly interpolated between samples,
   so resolution is finer than the simulation timestep.

@@ -389,9 +389,14 @@ TR = {
     "meas.ref":      ("Ref", "基準"),
     "meas.level":    ("Level", "レベル"),
     "meas.apply":    ("Set to cursor {}", "決定 (縦線{}の位置へ)"),
+    "meas.view":     ("Bring line {} into view", "縦線{}を表示範囲へ"),
     "tip.apply":     ("Move the point marker to where cursor line {0} "
                       "crosses the trace",
                       "カーソル{0}の縦線と波形の交点へ丸印を移動"),
+    "tip.view":      ("Move cursor line {0} into the visible X window "
+                      "(enabled only when it is off-screen)",
+                      "カーソル{0}の縦線を表示範囲内へ移動"
+                      "（表示範囲外のときのみ有効）"),
     "tip.close":     ("Close the .raw selected in Sources",
                       "Sources で選択した .raw を閉じる"),
     "tip.rect":      ("Drag to zoom into a rectangle (two points)",
@@ -876,10 +881,14 @@ class MainWindow(QtWidgets.QMainWindow):
             apply_btn = QtWidgets.QPushButton()
             self._reg(apply_btn.setText, "meas.apply", tag)
             self._reg(apply_btn.setToolTip, "tip.apply", tag)
+            view_btn = QtWidgets.QPushButton()
+            self._reg(view_btn.setText, "meas.view", tag)
+            self._reg(view_btn.setToolTip, "tip.view", tag)
             g.addWidget(lbl_l, 2, 0)
             g.addWidget(level_sb, 2, 1)
             g.addWidget(half_btn, 2, 2)
             g.addWidget(apply_btn, 3, 0, 1, 3)
+            g.addWidget(view_btn, 4, 0, 1, 3)
             form.addWidget(box)
 
             trace_cb.currentIndexChanged.connect(self._recompute_measure)
@@ -889,8 +898,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 lambda _=False, t=tag: self._set_half_level(t))
             apply_btn.clicked.connect(
                 lambda _=False, t=tag: self._apply_cursor_to_point(t))
+            view_btn.clicked.connect(
+                lambda _=False, t=tag: self._bring_cursor_into_view(t))
             self.cursor_widgets[tag] = dict(
-                trace=trace_cb, mode=mode_cb, level=level_sb)
+                trace=trace_cb, mode=mode_cb, level=level_sb, view=view_btn)
 
         self.result_lbl = QtWidgets.QLabel("—")
         self.result_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1172,6 +1183,11 @@ class MainWindow(QtWidgets.QMainWindow):
             plot.getAxis("left").setWidth(72)
             if first_vb is None:
                 first_vb = plot.getViewBox()
+                # keep the per-cursor "bring into view" buttons in sync as the
+                # X range is panned/zoomed (X is linked, so the first pane's
+                # range represents them all)
+                first_vb.sigXRangeChanged.connect(
+                    self._update_cursor_view_buttons)
             else:
                 plot.setXLink(self.panes[pane_ids[0]])
             # only the bottom pane carries the axis name label; the unit is
@@ -1188,6 +1204,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._install_cursors(pane_ids)
         self._recompute_measure()
+        self._update_cursor_view_buttons()
 
     # -- view / zoom ---------------------------------------------------
     def _viewboxes(self) -> list[pg.ViewBox]:
@@ -1307,6 +1324,42 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_cursor_moved(self):
         self._recompute_measure()
+        self._update_cursor_view_buttons()
+
+    def _x_view_range(self) -> tuple[float, float] | None:
+        """Current visible X range (shared across the linked panes)."""
+        if not self.panes:
+            return None
+        vb = next(iter(self.panes.values())).getViewBox()
+        (x0, x1), _ = vb.viewRange()
+        return x0, x1
+
+    def _update_cursor_view_buttons(self):
+        """Enable each cursor's 'bring into view' button only while its
+        vertical line sits outside the visible X window."""
+        rng = self._x_view_range()
+        for tag in ("A", "B"):
+            btn = self.cursor_widgets[tag].get("view")
+            if btn is None:
+                continue
+            cur = self.cursorA if tag == "A" else self.cursorB
+            btn.setEnabled(
+                rng is not None and not (rng[0] <= cur.x() <= rng[1]))
+
+    def _bring_cursor_into_view(self, tag: str):
+        """Recentre a cursor's vertical line on the visible X window.
+
+        Only acts when the line is off-screen; the measurement marker and the
+        button states follow through the normal cursor-moved path."""
+        rng = self._x_view_range()
+        if rng is None:
+            return
+        x0, x1 = rng
+        cur = self.cursorA if tag == "A" else self.cursorB
+        if x0 <= cur.x() <= x1:
+            return
+        cur.set_x((x0 + x1) / 2.0)
+        self._on_cursor_moved()
 
     def _resolve_point(self, tag: str) -> tuple[Trace | None, MeasurePoint | None]:
         w = self.cursor_widgets[tag]
