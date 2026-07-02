@@ -18,7 +18,7 @@ python3 py_wv.py outputfile.raw  # ファイルを指定して起動
 ./py_wv.py outputfile.raw
 ```
 
-依存: `numpy`, `pyqtgraph`, Qt バインディング（`PyQt6` を使用）。すべてインストール済み。
+依存: `numpy`, `pyqtgraph`, Qt バインディング（`PyQt6` を使用）。
 
 > UI は既定で **英語** で起動します。**Option → Language** でいつでも日本語に切替可能です。
 

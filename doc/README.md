@@ -18,8 +18,7 @@ python3 py_wv.py outputfile.raw  # start with a file
 ./py_wv.py outputfile.raw
 ```
 
-Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used). All are
-already installed.
+Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used). 
 
 > The UI starts in **English** by default. Switch to Japanese from
 > **Option → Language** at any time.
