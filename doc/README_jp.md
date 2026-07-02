@@ -3,12 +3,10 @@
 *[English README](README.md)*
 
 ngspice の **バイナリ `.raw`** 波形を読み込み、表示・重ね合わせ・上下分離・
-2点間測定ができる **単一ファイル** の波形ビューアです。Python + pyqtgraph
+2点間測定ができる 波形ビューアです。Python + pyqtgraph
 (PyQt6) 製。
 
-`py_wv.py` は `waveview` パッケージ（rawfile リーダ・測定処理・Qt GUI）を1つの
-スクリプトに統合したものです。隣に `waveview/` パッケージを置く必要はなく、
-`numpy` と `pyqtgraph` があれば単体で動作します。
+`py_wv.py` は `numpy` と `pyqtgraph` が必要です。
 
 ## 起動
 

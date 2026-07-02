@@ -6,10 +6,7 @@ A waveform viewer for ngspice **binary `.raw`** files: load,
 overlay, split into stacked panes, and take two-point measurements. Built with
 Python + pyqtgraph (PyQt6).
 
-`py_wv.py` is a self-contained build of the `waveview` package — the rawfile
-reader, measurement primitives, and the Qt GUI combined into one script. It
-needs no `waveview/` package alongside it; only `numpy` and `pyqtgraph` are
-required.
+`py_wv.py` require `numpy` and `pyqtgraph`.
 
 ## Repository layout
 
