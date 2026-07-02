@@ -2,7 +2,7 @@
 
 *[日本語版 README](doc/README_jp.md) / [English README](doc/README.md)*
 
-A **single-file** waveform viewer for ngspice **binary `.raw`** files: load,
+A waveform viewer for ngspice **binary `.raw`** files: load,
 overlay, split into stacked panes, and take two-point measurements. Built with
 Python + pyqtgraph (PyQt6).
 
