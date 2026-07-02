@@ -14,15 +14,15 @@ required.
 ## Launch
 
 ```bash
-python3 source/py_wv.py                 # start empty, then load from the menu
-python3 source/py_wv.py outputfile.raw  # start with a file
+cd /home/uchida/work/design/TR1um/wave
+python3 py_wv.py                 # start empty, then load from the menu
+python3 py_wv.py outputfile.raw  # start with a file
 # or, if executable:
-chmod +x source/py_wv.py
-./source/py_wv.py outputfile.raw
+./py_wv.py outputfile.raw
 ```
 
-Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used).
-Install with `pip install numpy pyqtgraph PyQt6`.
+Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used). All are
+already installed.
 
 > The UI starts in **English** by default. Switch to Japanese from
 > **Option → Language** at any time.
@@ -100,22 +100,32 @@ Install with `pip install numpy pyqtgraph PyQt6`.
 - Choose a **Style**: `Solid / Dash / Dot / DashDot / DashDotDot`.
 
 ### Two-point measurement
-Configure Point A / Point B in the right **Measure** panel.
+Configure Point A / Point B in the right **Measure** panel. Each point is shown
+as a circle marker (●) on its trace; the vertical cursor lines A (yellow) and
+B (cyan) are used to position the points.
 - **Trace**: the waveform to measure (file + signal). A and B may use different
   waveforms.
 - **Ref** (reference):
-  - `Cursor` — the trace value at the cursor's X position.
-  - `Level` — a level crossing (rising or falling) within the visible range.
-  - `Rise` — a level crossing on a rising edge within the visible range.
-  - `Fall` — a level crossing on a falling edge within the visible range.
-  - For `Level` / `Rise` / `Fall`, only crossings inside the **currently
-    displayed X range** are considered; when several match, the **rightmost**
-    (largest X) one is chosen. Panning/zooming re-picks the point automatically.
+  - `Cursor` — the point sits at its own X position on the trace (see below).
+  - `Level` — the crossing of the level (rising or falling) **nearest the
+    cursor line**.
+  - `Rise` — the rising crossing of the level nearest the cursor line.
+  - `Fall` — the falling crossing of the level nearest the cursor line.
+  - For `Level` / `Rise` / `Fall` the whole trace is searched and the crossing
+    **closest to the vertical cursor line** is chosen — the line acts as a
+    seed: drop it near the edge of interest and the point snaps to that edge.
+    Moving the line re-picks the point live.
 - **Level**: the crossing threshold. The **½·max** button sets it to half the
   selected trace's maximum (e.g. Vdd = 5 V → 2.5 V).
-- **Drag the vertical cursors A (yellow) / B (cyan)** on the plot; for `Cursor`
-  mode the point follows the cursor, while `Rise`/`Fall`/`Level` snap to the
-  rightmost matching crossing in view, and a marker (●) is shown.
+- **Placing a point in `Cursor` mode** (two ways):
+  - **Drag the circle marker (●) directly** — it slides along the waveform
+    (the dragged X is used; Y snaps onto the trace).
+  - **Move the vertical cursor line, then press the point's
+    "Set to cursor A/B" (決定) button** — the circle jumps to where the line
+    crosses the trace. In `Cursor` mode the circle does **not** follow the
+    line automatically; press the button to commit a new position.
+  - Dragging the circle or pressing the button switches **Ref** to `Cursor`
+    automatically.
 - Results show **Δt**, **1/Δt**, and **ΔV / ΔI** (chosen automatically from the
   two points' quantities). Crossings are linearly interpolated between samples,
   so resolution is finer than the simulation timestep.

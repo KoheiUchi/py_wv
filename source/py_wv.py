@@ -235,14 +235,15 @@ def _parse_ascii_values(text: str, nvars: int, npts: int,
 # :class:`RefMode`:
 #
 # * ``CURSOR``  - sample the trace value at the cursor's x position.
-# * ``LEVEL``   - rightmost crossing of ``level`` (rising or falling) in view.
-# * ``RISE``    - rightmost rising crossing of ``level`` in view.
-# * ``FALL``    - rightmost falling crossing of ``level`` in view.
+# * ``LEVEL``   - crossing of ``level`` (rising or falling) nearest the cursor.
+# * ``RISE``    - rising crossing of ``level`` nearest the cursor.
+# * ``FALL``    - falling crossing of ``level`` nearest the cursor.
 #
-# For the level/edge modes the search is restricted to the currently visible
-# x range (``xlim``); when several crossings fall inside the view the rightmost
-# (largest x) one is chosen. Crossings are linearly interpolated between samples
-# so sub-sample resolution is available regardless of the simulation timestep.
+# For the level/edge modes the whole trace is searched and the crossing
+# closest to the vertical cursor line is chosen, so the line acts as a seed:
+# drop it near the edge of interest and the point snaps to that edge.
+# Crossings are linearly interpolated between samples so sub-sample resolution
+# is available regardless of the simulation timestep.
 
 class RefMode(enum.Enum):
     CURSOR = "Cursor"
@@ -302,13 +303,12 @@ def _all_crossings(x: np.ndarray, y: np.ndarray, level: float,
 
 
 def resolve(x: np.ndarray, y: np.ndarray, mode: RefMode,
-            cursor_x: float, level: float = 0.0,
-            xlim: tuple[float, float] | None = None) -> MeasurePoint:
+            cursor_x: float, level: float = 0.0) -> MeasurePoint:
     """Resolve a measurement point on ``(x, y)`` for ``mode``.
 
-    ``CURSOR`` samples the trace at ``cursor_x``. For the level/edge modes the
-    crossings are restricted to the visible x range ``xlim`` (a ``(lo, hi)``
-    tuple, or ``None`` for the whole trace) and the rightmost one is returned.
+    ``CURSOR`` samples the trace at ``cursor_x``. For the level/edge modes
+    the whole trace is searched and the crossing nearest to ``cursor_x``
+    (the vertical cursor line) is returned.
     """
     if mode is RefMode.CURSOR:
         return MeasurePoint(cursor_x, value_at(x, y, cursor_x), True,
@@ -316,16 +316,12 @@ def resolve(x: np.ndarray, y: np.ndarray, mode: RefMode,
 
     edge = {"Level": "any", "Rise": "rise", "Fall": "fall"}[mode.value]
     xs = _all_crossings(x, y, level, edge)
-    if xlim is not None:
-        lo, hi = sorted(xlim)
-        xs = xs[(xs >= lo) & (xs <= hi)]
     if xs.size == 0:
-        where = " in view" if xlim is not None else ""
         return MeasurePoint(cursor_x, value_at(x, y, cursor_x), False,
-                            f"no {mode.value.lower()} crossing of {level:g}{where}")
+                            f"no {mode.value.lower()} crossing of {level:g}")
 
-    # pick the rightmost crossing within the visible range
-    pick = float(xs.max())
+    # pick the crossing closest to the cursor line
+    pick = float(xs[np.argmin(np.abs(xs - cursor_x))])
     return MeasurePoint(pick, level, True,
                         f"{mode.value} @ {level:g}")
 
@@ -392,6 +388,10 @@ TR = {
     "meas.trace":    ("Trace", "対象"),
     "meas.ref":      ("Ref", "基準"),
     "meas.level":    ("Level", "レベル"),
+    "meas.apply":    ("Set to cursor {}", "決定 (縦線{}の位置へ)"),
+    "tip.apply":     ("Move the point marker to where cursor line {0} "
+                      "crosses the trace",
+                      "カーソル{0}の縦線と波形の交点へ丸印を移動"),
     "tip.close":     ("Close the .raw selected in Sources",
                       "Sources で選択した .raw を閉じる"),
     "tip.rect":      ("Drag to zoom into a rectangle (two points)",
@@ -444,14 +444,20 @@ class Trace:
 
 # ---------------------------------------------------------------------------
 class Cursor:
-    """A draggable vertical cursor mirrored across every stacked pane."""
+    """A draggable vertical cursor mirrored across every stacked pane.
+
+    The measurement point marker (the circle) is decoupled from the line:
+    in Cursor mode it keeps its own x position (``point_x``), set either by
+    dragging the circle itself or by the per-point 決定 button, which moves
+    it to where the vertical line crosses the trace."""
 
     def __init__(self, name: str, color: str):
         self.name = name
         self.color = color
         self.lines: list[pg.InfiniteLine] = []
-        self.marker: pg.ScatterPlotItem | None = None
+        self.marker: pg.TargetItem | None = None
         self.marker_host: pg.PlotItem | None = None
+        self.point_x: float | None = None  # marker x; None = follow the line
         self._x = 0.0
         self._syncing = False
         self.on_moved = None  # callback()
@@ -521,6 +527,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.panes: dict[int, pg.PlotItem] = {}
         self._color_iter = itertools.cycle(COLOR_CYCLE)
         self._suppress_tree_signal = False
+        self._marker_syncing = False   # True while we position markers in code
         self.rect_zoom = False
         self.lang = "en"               # "ja" or "en"
         self._tr: list = []            # (setter, key, fmt-args) registry
@@ -866,9 +873,13 @@ class MainWindow(QtWidgets.QMainWindow):
             g.addWidget(trace_cb, 0, 1, 1, 2)
             g.addWidget(lbl_r, 1, 0)
             g.addWidget(mode_cb, 1, 1, 1, 2)
+            apply_btn = QtWidgets.QPushButton()
+            self._reg(apply_btn.setText, "meas.apply", tag)
+            self._reg(apply_btn.setToolTip, "tip.apply", tag)
             g.addWidget(lbl_l, 2, 0)
             g.addWidget(level_sb, 2, 1)
             g.addWidget(half_btn, 2, 2)
+            g.addWidget(apply_btn, 3, 0, 1, 3)
             form.addWidget(box)
 
             trace_cb.currentIndexChanged.connect(self._recompute_measure)
@@ -876,6 +887,8 @@ class MainWindow(QtWidgets.QMainWindow):
             level_sb.sigValueChanged.connect(self._recompute_measure)
             half_btn.clicked.connect(
                 lambda _=False, t=tag: self._set_half_level(t))
+            apply_btn.clicked.connect(
+                lambda _=False, t=tag: self._apply_cursor_to_point(t))
             self.cursor_widgets[tag] = dict(
                 trace=trace_cb, mode=mode_cb, level=level_sb)
 
@@ -1159,10 +1172,6 @@ class MainWindow(QtWidgets.QMainWindow):
             plot.getAxis("left").setWidth(72)
             if first_vb is None:
                 first_vb = plot.getViewBox()
-                # Re-resolve level/edge points against the new visible range
-                # whenever the (linked) X axis is panned or zoomed.
-                first_vb.sigXRangeChanged.connect(
-                    lambda *_: self._recompute_measure())
             else:
                 plot.setXLink(self.panes[pane_ids[0]])
             # only the bottom pane carries the axis name label; the unit is
@@ -1261,9 +1270,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     lambda ln, c=cur: c._line_moved(ln))
                 self.panes[pid].addItem(line)
                 cur.lines.append(line)
-            mk = pg.ScatterPlotItem(
-                size=12, symbol="o", pen=pg.mkPen("w"),
-                brush=pg.mkBrush(cur.color))
+            mk = pg.TargetItem(
+                size=12, symbol="o", movable=True,
+                pen=pg.mkPen("w"), brush=pg.mkBrush(cur.color))
+            mk.sigPositionChanged.connect(
+                lambda _=None, c=cur: self._marker_dragged(c))
             # marker lives on the pane of its configured trace; added lazily
             cur.marker = mk
 
@@ -1305,17 +1316,14 @@ class MainWindow(QtWidgets.QMainWindow):
         cur = self.cursorA if tag == "A" else self.cursorB
         mode = w["mode"].currentData()
         x, y = tr.xy()
-        mp = resolve(x, y, mode, cur.x(), w["level"].value(),
-                     xlim=self._visible_xrange())
+        # In Cursor mode the point keeps its own x (set by dragging the
+        # circle or by the 決定 button); it does not follow the line live.
+        # In the level/edge modes the line is the seed: the nearest matching
+        # crossing is picked, so those points do follow the line.
+        xq = (cur.point_x if mode is RefMode.CURSOR and cur.point_x is not None
+              else cur.x())
+        mp = resolve(x, y, mode, xq, w["level"].value())
         return tr, mp
-
-    def _visible_xrange(self) -> tuple[float, float] | None:
-        """The X range currently shown in the plot, or None if no panes."""
-        if not self.panes:
-            return None
-        vb = next(iter(self.panes.values())).getViewBox()
-        (x0, x1), _ = vb.viewRange()
-        return (x0, x1)
 
     def _recompute_measure(self):
         if not self.traces:
@@ -1335,12 +1343,49 @@ class MainWindow(QtWidgets.QMainWindow):
             cur.marker_host.removeItem(cur.marker)
             cur.marker_host = None
         if tr is None or mp is None or not mp.ok or tr.pane not in self.panes:
-            cur.marker.setData([], [])
             return
         host = self.panes[tr.pane]
         host.addItem(cur.marker)
         cur.marker_host = host
-        cur.marker.setData([mp.x], [mp.y])
+        self._marker_syncing = True
+        cur.marker.setPos(mp.x, mp.y)
+        self._marker_syncing = False
+
+    def _marker_dragged(self, cur: Cursor):
+        """The circle was dragged: slide it along its trace.
+
+        Only the dragged x is honoured; y is re-interpolated from the
+        configured trace so the marker stays on the waveform. A manual
+        placement implies Cursor mode, so the mode combo is switched."""
+        if self._marker_syncing or cur.marker is None:
+            return
+        tag = cur.name
+        tr = self._trace_by_uid(self.cursor_widgets[tag]["trace"].currentData())
+        if tr is None:
+            return
+        x, _ = tr.xy()
+        xq = float(cur.marker.pos().x())
+        cur.point_x = min(max(xq, float(x.min())), float(x.max()))
+        self._force_cursor_mode(tag)
+        self._recompute_measure()
+
+    def _apply_cursor_to_point(self, tag: str):
+        """決定 button: move the circle to the line/waveform intersection."""
+        cur = self.cursorA if tag == "A" else self.cursorB
+        cur.point_x = cur.x()
+        self._force_cursor_mode(tag)
+        self._recompute_measure()
+
+    def _force_cursor_mode(self, tag: str):
+        cb = self.cursor_widgets[tag]["mode"]
+        if cb.currentData() is RefMode.CURSOR:
+            return
+        for i in range(cb.count()):
+            if cb.itemData(i) is RefMode.CURSOR:
+                cb.blockSignals(True)
+                cb.setCurrentIndex(i)
+                cb.blockSignals(False)
+                break
 
     def _format_results(self, trA, mpA, trB, mpB) -> str:
         def fmt_pt(tag, tr, mp):
