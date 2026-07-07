@@ -65,6 +65,11 @@ Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used).
 - **Zoom X to Cursors A–B (Ctrl+B)** — fit the X range to the A–B cursor span.
 - **Panels** — show/hide the Sources / Traces / Measure docks. A panel closed
   with its ✕ can be reopened here.
+- **Dock all panels** — merge every floating panel back into the main window.
+  Each panel can be torn off and floated as a separate window; while a panel is
+  floating a **⤵ Dock to main window** button appears at the top of it (hidden
+  while docked) that re-attaches it to its previous position. This View-menu
+  entry does the same for all floating panels at once.
 - **X-axis navigation bar** — a row of buttons below the plot operates the
   shared X axis with the mouse (mirrors the keyboard controls):
   - **◀◀ / ◀** — pan left (50% / 10% of the view width).

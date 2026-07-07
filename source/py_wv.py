@@ -374,6 +374,10 @@ TR = {
     "panel.sources": ("Sources", "信号一覧"),
     "panel.traces":  ("Traces", "トレース"),
     "panel.measure": ("Measure", "測定"),
+    "view.redock":   ("Dock all panels", "全パネルを結合"),
+    "dock.redock":   ("⤵ Dock to main window", "⤵ メインウィンドウに結合"),
+    "tip.redock":    ("Re-attach this floating panel to the main window",
+                      "切り離したパネルをメインウィンドウに戻す"),
     "tb.split":      ("Split selected ▼", "選択を分離 ▼"),
     "tb.merge":      ("Merge selected ▲", "選択を重ねる ▲"),
     "tb.remove":     ("Remove trace", "トレース削除"),
@@ -764,6 +768,10 @@ class MainWindow(QtWidgets.QMainWindow):
             sub.addAction(act)
             self._reg(act.setText, key)
             self._reg(dock.setWindowTitle, key)
+        # merge any floating panels back into the main window
+        act_redock = self.view_menu.addAction("")
+        act_redock.triggered.connect(self._dock_all_panels)
+        self._reg(act_redock.setText, "view.redock")
 
     def _build_option_menu(self):
         opt = self.menuBar().addMenu("")
@@ -819,6 +827,33 @@ class MainWindow(QtWidgets.QMainWindow):
         a.triggered.connect(self.remove_selected)
         self._reg(a.setText, "tb.remove")
 
+    def _dockable(self, dock: QtWidgets.QDockWidget,
+                  content: QtWidgets.QWidget):
+        """Give ``dock`` a content wrapper with a 'dock to main window' button.
+
+        The button sits above the panel content and is shown only while the
+        dock is floating, so a panel torn off the main window can be merged
+        back exactly where it was (its last dock area)."""
+        wrap = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(wrap)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        btn = QtWidgets.QPushButton()
+        btn.setVisible(dock.isFloating())
+        self._reg(btn.setText, "dock.redock")
+        self._reg(btn.setToolTip, "tip.redock")
+        btn.clicked.connect(lambda: dock.setFloating(False))
+        dock.topLevelChanged.connect(btn.setVisible)
+        v.addWidget(btn)
+        v.addWidget(content, 1)
+        dock.setWidget(wrap)
+
+    def _dock_all_panels(self):
+        """Merge every floating panel back into the main window."""
+        for dock in (self.dock_sources, self.dock_traces, self.dock_measure):
+            if dock.isFloating():
+                dock.setFloating(False)
+
     def _build_sources_dock(self):
         dock = QtWidgets.QDockWidget("Sources", self)
         dock.setObjectName("sources")
@@ -827,7 +862,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tree.setHeaderLabels(["Signal", "Type"])
         self.tree.setColumnWidth(0, 220)
         self.tree.itemChanged.connect(self._on_tree_item_changed)
-        dock.setWidget(self.tree)
+        self._dockable(dock, self.tree)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_traces_dock(self):
@@ -847,7 +882,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hdr.setStretchLastSection(False)
         for col, w in enumerate((44, 200, 52, 90, 52, 32)):
             self.table.setColumnWidth(col, w)
-        dock.setWidget(self.table)
+        self._dockable(dock, self.table)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_measure_dock(self):
@@ -912,7 +947,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addWidget(self.result_lbl)
         form.addStretch(1)
 
-        dock.setWidget(w)
+        self._dockable(dock, w)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     # -- file loading --------------------------------------------------
