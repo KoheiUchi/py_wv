@@ -11,7 +11,6 @@ Python + pyqtgraph (PyQt6).
 ## Launch
 
 ```bash
-cd /home/uchida/work/design/TR1um/wave
 python3 py_wv.py                 # start empty, then load from the menu
 python3 py_wv.py outputfile.raw  # start with a file
 # or, if executable:
@@ -37,10 +36,31 @@ Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used).
   Selecting either the file node or one of its signals closes that file; its
   traces and measurement targets are removed automatically. Multi-select is
   supported.
+- **Reload .raw files (F5)** — re-read every loaded `.raw` from disk (also on
+  the toolbar). Traces are re-bound to the fresh data **by signal name**, so
+  pane / colour / style and measurement setups survive the reload; a trace
+  whose signal no longer exists in the new file is dropped (reported in the
+  status bar).
+- **Auto-reload changed files** (checkable, ON by default) — the loaded files
+  are watched, and when one changes on disk (e.g. a simulation is re-run) it
+  is reloaded automatically. Change bursts are debounced (0.5 s), so a file
+  still being written is read once, after it settles; if a read fails
+  mid-write, the previous data is kept and the next change retries.
 - **Exit (Ctrl+Q)** — quit the program.
 
 ### Displaying waveforms
 - Check a signal's checkbox in the left **Sources** tree to add it as a trace.
+- **Signals are shown hierarchically**: the dot-separated instance path in a
+  signal name becomes nested tree levels — `v(xtop.xsub.out)` appears as
+  `xtop → xsub → v(out)`. Hover a leaf to see the full signal name as a
+  tooltip.
+- **A hierarchy node has its own checkbox**: checking/unchecking it toggles
+  every signal underneath at once. When a subtree is only partly displayed,
+  the node shows a partial (■) mark.
+- **Multiple signals can be selected at once** (Ctrl+click to add to the
+  selection, Shift+click for a range). Toggling the checkbox of any selected
+  row applies the same state to **every selected signal**, so many traces can
+  be shown or hidden in one operation.
 - `time` (the sweep axis) automatically becomes the X axis.
 - **X-axis ticks use SI prefixes in 10³ steps (…, ps, ns, µs, ms, …) plus the
   unit** (e.g. `60ns`). Every stacked pane uses the same format, and the prefix
@@ -52,7 +72,12 @@ Dependencies: `numpy`, `pyqtgraph`, and a Qt binding (`PyQt6` is used).
   - **Different Pane numbers = stacked top/bottom** (X axes stay linked).
 - Select traces in the table, then:
   - Toolbar **Split selected ▼** — move the selection to a new pane.
-  - Toolbar **Merge selected ▲** — overlay the selection into one pane.
+  - Toolbar **Merge selected ▲** — overlay the selection onto a **pane of your
+    choice**: a popup menu lists every existing pane with the names of the
+    traces it holds (e.g. `Pane 0: v(out), v(in)`); pick the merge target from
+    it. A pane that already holds all selected traces is greyed out, and Esc
+    (or clicking outside the menu) cancels. A single selected trace can also
+    be merged onto another pane this way.
   - Or change the **Pane** spinbox per trace.
 - Table columns are resizable — drag the **Trace** column border to widen it.
 

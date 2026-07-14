@@ -58,6 +58,12 @@ chmod +x source/py_wv.py
 
 - **Load ngspice binary `.raw` files** (real & complex sweeps). The same
   filename can be loaded any number of times; each load gets a unique `#N` id.
+- **Reload / auto-reload** — re-read loaded files with **F5**, or let py_wv
+  watch them and reload automatically when a simulation is re-run (pane /
+  colour / style / measurement setups are preserved across the reload).
+- **Hierarchical signal tree** — dot-separated instance paths become nested
+  levels (`v(xtop.xsub.out)` → `xtop → xsub → v(out)`); a node's checkbox
+  toggles every signal underneath, and multi-select applies in one operation.
 - **Overlay / split** traces into stacked panes with a shared, linked X axis.
 - **SI-prefixed X-axis ticks** in 10³ steps (…, ps, ns, µs, ms, …) with the
   unit shown on every pane (e.g. `60ns`).
@@ -71,6 +77,8 @@ chmod +x source/py_wv.py
 - **Bilingual UI** (English / 日本語) and adjustable font size.
 - **Per-trace colour and line style** (`Solid / Dash / Dot / DashDot /
   DashDotDot`).
+- **Dockable panels** — the Sources / Traces / Measure panels can be torn off
+  and floated as separate windows, then re-docked to the main window.
 
 For the full operation guide (menus, shortcuts, measurement details), see the
 documentation:

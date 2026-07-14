@@ -50,8 +50,8 @@ class Variable:
         return self.quantity == "voltage"
 
 
-@dataclass
-class RawFile:
+@dataclass(eq=False)  # identity semantics: keeps hashability, and field
+class RawFile:        # comparison would choke on the numpy arrays anyway
     """A parsed ngspice rawfile.
 
     Attributes
@@ -359,6 +359,18 @@ TR = {
     "menu.option":   ("&Option", "オプション(&O)"),
     "file.open":     ("Open .raw…", "raw を開く…"),
     "file.close":    ("Close .raw", "raw を閉じる"),
+    "file.reload":   ("Reload .raw files", "raw を再読み込み"),
+    "file.autoreload": ("Auto-reload changed files",
+                        "raw 更新時に自動再読み込み"),
+    "tip.reload":    ("Re-read every loaded .raw from disk (F5)",
+                      "読み込み済みの全 .raw をディスクから再読み込み (F5)"),
+    "tip.autoreload": ("Watch loaded files and reload automatically "
+                       "when they change on disk",
+                       "読み込み済みファイルを監視し、更新されたら"
+                       "自動で再読み込みする"),
+    "status.reload": ("Reloaded {}", "再読み込み: {}"),
+    "status.dropped": (" ({} trace(s) dropped: signal no longer present)",
+                       "（{} 個のトレースは信号が無くなったため削除）"),
     "file.exit":     ("Exit", "終了"),
     "view.fit":      ("Fit All", "全体表示"),
     "view.zin":      ("Zoom In", "拡大"),
@@ -407,8 +419,11 @@ TR = {
                       "左ドラッグで囲んだ任意の2点の範囲にズーム"),
     "tip.split":     ("Move selected traces to a new pane (stacked)",
                       "選択トレースを新規ペインに分離（上下表示）"),
-    "tip.merge":     ("Overlay selected traces in one pane",
-                      "選択トレースを1つのペインに重ねる"),
+    "tip.merge":     ("Overlay selected traces onto a pane of your choice",
+                      "選択トレースを指定したペインに重ねる"),
+    "merge.pane":    ("Pane {}: {}", "ペイン {}: {}"),
+    "merge.status":  ("Merged {} trace(s) into pane {}",
+                      "{} 個のトレースをペイン {} に重ねました"),
     "tip.half":      ("Set level to ½ of the trace's max (e.g. Vdd/2)",
                       "選択トレース最大値の1/2をレベルに設定 (例: Vdd/2)"),
     "status.start":  ("Open one or more .raw files to begin.",
@@ -422,7 +437,30 @@ TR = {
 }
 
 
-@dataclass
+# ---- signal-name hierarchy --------------------------------------------
+_WRAP_RE = re.compile(r"^([a-zA-Z@#]+)\((.+)\)$")
+
+
+def _split_hier(name: str) -> tuple[list[str], str]:
+    """Split a signal name into (hierarchy path, leaf label).
+
+    The dot-separated instance path inside (or of) the name becomes tree
+    levels; the quantity wrapper stays on the leaf:
+
+    ``v(xa.xb.out)`` -> (["xa", "xb"], "v(out)")
+    ``xa.xb.n1``     -> (["xa", "xb"], "n1")
+    ``i(vdd)``       -> ([], "i(vdd)")
+    """
+    m = _WRAP_RE.match(name)
+    if m:
+        prefix, inner = m.group(1), m.group(2)
+        parts = inner.split(".")
+        return parts[:-1], f"{prefix}({parts[-1]})"
+    parts = name.split(".")
+    return parts[:-1], parts[-1]
+
+
+@dataclass(eq=False)  # identity semantics so traces can live in sets
 class Trace:
     """A waveform selected for display: a (file, variable) pair plus style."""
 
@@ -540,6 +578,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rect_zoom = False
         self.lang = "en"               # "ja" or "en"
         self._tr: list = []            # (setter, key, fmt-args) registry
+
+        # Auto-reload: watch loaded .raw files and re-read them when they
+        # change on disk. Changes are debounced so a file still being
+        # written (e.g. by a running simulation) is read once, at the end.
+        self.auto_reload = True
+        self.watcher = QtCore.QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(self._on_file_changed)
+        self._pending_paths: set[str] = set()
+        self._reload_timer = QtCore.QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(500)
+        self._reload_timer.timeout.connect(self._flush_pending_reload)
 
         app = QtWidgets.QApplication.instance()
         base_pt = app.font().pointSizeF()
@@ -719,6 +769,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reg(a.setToolTip, "tip.close")
         file_menu.addSeparator()
         a = file_menu.addAction("")
+        a.setShortcut("F5")
+        a.triggered.connect(lambda: self.reload_raws())
+        self._reg(a.setText, "file.reload")
+        self._reg(a.setToolTip, "tip.reload")
+        self.act_autoreload = file_menu.addAction("")
+        self.act_autoreload.setCheckable(True)
+        self.act_autoreload.setChecked(self.auto_reload)
+        self.act_autoreload.toggled.connect(self._set_auto_reload)
+        self._reg(self.act_autoreload.setText, "file.autoreload")
+        self._reg(self.act_autoreload.setToolTip, "tip.autoreload")
+        file_menu.addSeparator()
+        a = file_menu.addAction("")
         a.setShortcuts([QtGui.QKeySequence.StandardKey.Quit,
                         QtGui.QKeySequence("Ctrl+Q")])
         a.triggered.connect(self.close)
@@ -813,6 +875,10 @@ class MainWindow(QtWidgets.QMainWindow):
         a = tb.addAction("")
         a.triggered.connect(self.open_files)
         self._reg(a.setText, "file.open")
+        a = tb.addAction("")
+        a.triggered.connect(lambda: self.reload_raws())
+        self._reg(a.setText, "file.reload")
+        self._reg(a.setToolTip, "tip.reload")
         tb.addSeparator()
         a = tb.addAction("")
         a.triggered.connect(self.split_selected)
@@ -861,6 +927,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(["Signal", "Type"])
         self.tree.setColumnWidth(0, 220)
+        # Ctrl/Shift click selects several signals; toggling one checkbox
+        # then applies to the whole selection (see _on_tree_item_changed).
+        self.tree.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.itemChanged.connect(self._on_tree_item_changed)
         self._dockable(dock, self.tree)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
@@ -966,6 +1036,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.raws.append(raw)
         self._add_source_to_tree(raw)
+        self._update_watcher()
         self.statusBar().showMessage(
             f"Loaded {raw.label}#{raw.uid}: {len(raw.variables)-1} signals, "
             f"{raw.npoints} pts")
@@ -1001,59 +1072,261 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_traces_table()
         self._rebuild_panes()
         self._refresh_measure_trace_combos()
+        self._update_watcher()
         self.statusBar().showMessage("Closed " + ", ".join(labels))
 
-    def _add_source_to_tree(self, raw: RawFile):
+    # -- reload / auto-reload --------------------------------------------
+    def _set_auto_reload(self, on: bool):
+        self.auto_reload = on
+        self._update_watcher()
+
+    def _update_watcher(self):
+        """Point the filesystem watcher at the loaded files' paths."""
+        old = self.watcher.files()
+        if old:
+            self.watcher.removePaths(old)
+        if self.auto_reload:
+            paths = sorted({r.path for r in self.raws
+                            if os.path.exists(r.path)})
+            if paths:
+                self.watcher.addPaths(paths)
+
+    def _on_file_changed(self, path: str):
+        # debounce: restart the timer on every change notification so a
+        # file in mid-write is only re-read once, after it settles
+        self._pending_paths.add(path)
+        self._reload_timer.start()
+
+    def _flush_pending_reload(self):
+        paths, self._pending_paths = self._pending_paths, set()
+        self.reload_raws(paths)
+        # re-arm the watch: many writers replace the file (new inode),
+        # which drops it from the watcher
+        self._update_watcher()
+
+    def _reload_raw(self, raw: RawFile) -> bool:
+        """Re-read ``raw`` from disk, grafting the fresh parse in place.
+
+        Updating the existing object (same uid/label) keeps every
+        ``Trace.raw`` reference valid. Returns False - leaving the old data
+        untouched - if the file is unreadable (e.g. mid-write)."""
+        try:
+            fresh = load_raw(raw.path)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Reload failed: {raw.path}: {exc}")
+            return False
+        raw.title = fresh.title
+        raw.date = fresh.date
+        raw.plotname = fresh.plotname
+        raw.command = fresh.command
+        raw.flags = fresh.flags
+        raw.variables = fresh.variables
+        raw.data = fresh.data
+        raw.cdata = fresh.cdata
+        raw._by_name = {v.name.lower(): v.index for v in fresh.variables}
+        return True
+
+    def reload_raws(self, paths: set[str] | None = None):
+        """Re-read loaded .raw files from disk (all, or only ``paths``).
+
+        Traces are re-bound to the fresh variable table by signal name, so
+        pane / colour / style / measurement setups survive the reload; a
+        trace whose signal no longer exists is dropped."""
+        targets = [r for r in self.raws
+                   if paths is None or r.path in paths]
+        reloaded = [r for r in targets if self._reload_raw(r)]
+        if not reloaded:
+            return
+        reloaded_uids = {r.uid for r in reloaded}
+        kept = []
+        for t in self.traces:
+            if t.raw.uid not in reloaded_uids:
+                kept.append(t)
+                continue
+            idx = t.raw.index_of(t.var.name)
+            if idx is not None:
+                t.var = t.raw.variables[idx]
+                kept.append(t)
+        dropped = len(self.traces) - len(kept)
+        self.traces = kept
+        for raw in reloaded:
+            self._rebuild_source_item(raw)
+        self._sync_tree_checks()
+        self._refresh_traces_table()
+        self._rebuild_panes()
+        self._refresh_measure_trace_combos()
+        msg = self.t("status.reload",
+                     ", ".join(f"{r.label}#{r.uid}" for r in reloaded))
+        if dropped:
+            msg += self.t("status.dropped", dropped)
+        self.statusBar().showMessage(msg)
+
+    def _rebuild_source_item(self, raw: RawFile):
+        """Replace a file's tree node in place (same top-level position)."""
+        for i in range(self.tree.topLevelItemCount()):
+            meta = self.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)
+            if meta and meta[0] == "file" and meta[1] == raw.uid:
+                self._suppress_tree_signal = True
+                self.tree.takeTopLevelItem(i)
+                self._suppress_tree_signal = False
+                self._add_source_to_tree(raw, pos=i)
+                return
+        self._add_source_to_tree(raw)
+
+    def _add_source_to_tree(self, raw: RawFile, pos: int | None = None):
+        """Add a file node with its signals arranged hierarchically.
+
+        The dot-separated instance path in each signal name (e.g.
+        ``v(xtop.xsub.out)``) becomes nested group nodes; the leaf keeps the
+        quantity wrapper (``v(out)``). Group checkboxes toggle their whole
+        subtree. ``pos`` inserts the file node at a top-level index (used by
+        reload to keep the file's place); default appends."""
         self._suppress_tree_signal = True
         root = QtWidgets.QTreeWidgetItem(
-            self.tree, [f"{raw.label}  #{raw.uid}", raw.plotname])
+            [f"{raw.label}  #{raw.uid}", raw.plotname])
         root.setData(0, Qt.ItemDataRole.UserRole, ("file", raw.uid))
-        root.setExpanded(True)
         f = root.font(0)
         f.setBold(True)
         root.setFont(0, f)
+
+        groups: dict[tuple, QtWidgets.QTreeWidgetItem] = {}
+
+        def group_item(path: tuple) -> QtWidgets.QTreeWidgetItem:
+            if not path:
+                return root
+            it = groups.get(path)
+            if it is None:
+                it = QtWidgets.QTreeWidgetItem(group_item(path[:-1]),
+                                               [path[-1], ""])
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(0, Qt.CheckState.Unchecked)
+                it.setData(0, Qt.ItemDataRole.UserRole, ("group", raw.uid))
+                groups[path] = it
+            return it
+
         for var in raw.variables[1:]:  # skip the sweep axis
-            it = QtWidgets.QTreeWidgetItem(root, [var.name, var.quantity])
+            path, leaf = _split_hier(var.name)
+            it = QtWidgets.QTreeWidgetItem(group_item(tuple(path)),
+                                           [leaf, var.quantity])
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(0, Qt.CheckState.Unchecked)
+            it.setToolTip(0, var.name)
             it.setData(0, Qt.ItemDataRole.UserRole,
                        ("var", raw.uid, var.index))
+
+        if pos is None:
+            self.tree.addTopLevelItem(root)
+        else:
+            self.tree.insertTopLevelItem(pos, root)
+        # expansion is view state, so it can only be set once attached
+        root.setExpanded(True)
+        for it in self._iter_tree(root):
+            if it.childCount():
+                it.setExpanded(True)
+        self._suppress_tree_signal = False
+
+    @staticmethod
+    def _iter_tree(item) -> list:
+        """Every descendant of ``item`` (depth-first)."""
+        out = []
+        stack = [item.child(i) for i in range(item.childCount())]
+        while stack:
+            it = stack.pop()
+            out.append(it)
+            stack.extend(it.child(i) for i in range(it.childCount()))
+        return out
+
+    def _var_items_under(self, item) -> list:
+        return [it for it in self._iter_tree(item)
+                if (m := it.data(0, Qt.ItemDataRole.UserRole))
+                and m[0] == "var"]
+
+    def _update_group_states(self):
+        """Reflect descendant check states on every group node.
+
+        Fully checked / unchecked subtrees show that state; mixed subtrees
+        show a partial (tristate) mark. Purely cosmetic - clicking a group
+        still toggles binary via _on_tree_item_changed."""
+        self._suppress_tree_signal = True
+        for i in range(self.tree.topLevelItemCount()):
+            for it in self._iter_tree(self.tree.topLevelItem(i)):
+                meta = it.data(0, Qt.ItemDataRole.UserRole)
+                if not meta or meta[0] != "group":
+                    continue
+                states = {v.checkState(0) for v in self._var_items_under(it)}
+                if states == {Qt.CheckState.Checked}:
+                    st = Qt.CheckState.Checked
+                elif Qt.CheckState.Checked in states:
+                    st = Qt.CheckState.PartiallyChecked
+                else:
+                    st = Qt.CheckState.Unchecked
+                it.setCheckState(0, st)
         self._suppress_tree_signal = False
 
     def _on_tree_item_changed(self, item, column):
         if self._suppress_tree_signal or column != 0:
             return
         meta = item.data(0, Qt.ItemDataRole.UserRole)
-        if not meta or meta[0] != "var":
+        if not meta or meta[0] not in ("var", "group"):
             return
-        _, uid, vidx = meta
         checked = item.checkState(0) == Qt.CheckState.Checked
-        if checked:
-            self._add_trace(uid, vidx)
+        if meta[0] == "group":
+            # a group checkbox toggles every signal in its subtree
+            targets = self._var_items_under(item)
         else:
-            self._remove_trace_by_var(uid, vidx)
+            # When the toggled row is part of a multi-selection, apply the
+            # same check state to every selected signal so they plot/unplot
+            # together.
+            targets = [item]
+            sel = [it for it in self.tree.selectedItems()
+                   if (m := it.data(0, Qt.ItemDataRole.UserRole))
+                   and m[0] == "var"]
+            if item in sel and len(sel) > 1:
+                targets = sel
+        state = (Qt.CheckState.Checked if checked
+                 else Qt.CheckState.Unchecked)
+        self._suppress_tree_signal = True
+        for it in targets:
+            it.setCheckState(0, state)
+        self._suppress_tree_signal = False
+        for it in targets:
+            _, uid, vidx = it.data(0, Qt.ItemDataRole.UserRole)
+            if checked:
+                self._add_trace(uid, vidx, refresh=False)
+            else:
+                self._remove_trace_by_var(uid, vidx, refresh=False)
+        self._update_group_states()
+        self._refresh_traces_table()
+        self._rebuild_panes()
+        self._refresh_measure_trace_combos()
 
     # -- trace management ----------------------------------------------
     def _find_raw(self, uid: int) -> RawFile | None:
         return next((r for r in self.raws if r.uid == uid), None)
 
-    def _add_trace(self, raw_uid: int, vidx: int):
+    def _add_trace(self, raw_uid: int, vidx: int, refresh: bool = True):
         raw = self._find_raw(raw_uid)
         if raw is None:
+            return
+        # a multi-select batch may include rows that were already checked
+        if any(t.raw.uid == raw_uid and t.var.index == vidx
+               for t in self.traces):
             return
         color = QtGui.QColor(next(self._color_iter))
         tr = Trace(uid=next(_trace_uid), raw=raw, var=raw.variables[vidx],
                    color=color)
         self.traces.append(tr)
-        self._refresh_traces_table()
-        self._rebuild_panes()
-        self._refresh_measure_trace_combos()
+        if refresh:
+            self._refresh_traces_table()
+            self._rebuild_panes()
+            self._refresh_measure_trace_combos()
 
-    def _remove_trace_by_var(self, raw_uid: int, vidx: int):
+    def _remove_trace_by_var(self, raw_uid: int, vidx: int,
+                             refresh: bool = True):
         before = len(self.traces)
         self.traces = [t for t in self.traces
                        if not (t.raw.uid == raw_uid and t.var.index == vidx)]
-        if len(self.traces) != before:
+        if refresh and len(self.traces) != before:
             self._refresh_traces_table()
             self._rebuild_panes()
             self._refresh_measure_trace_combos()
@@ -1073,14 +1346,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rebuild_panes()
 
     def merge_selected(self):
+        """Overlay the selected traces onto a pane chosen by the user.
+
+        A popup menu lists every existing pane with the names of the traces
+        it holds, so the merge target can be picked explicitly instead of
+        always collapsing into the lowest pane number."""
         sel = self.selected_traces()
-        if len(sel) < 2:
+        if not sel:
             return
-        target = min(t.pane for t in sel)
+        panes = sorted({t.pane for t in self.traces})
+        if len(panes) < 2:
+            return  # single pane: nothing to choose, nothing to merge
+        menu = QtWidgets.QMenu(self)
+        for pid in panes:
+            members = [t for t in self.traces if t.pane == pid]
+            names = ", ".join(t.var.name for t in members[:4])
+            if len(members) > 4:
+                names += ", …"
+            act = menu.addAction(self.t("merge.pane", pid, names))
+            act.setData(pid)
+            # a pane already holding every selected trace is not a target
+            act.setEnabled(not all(t.pane == pid for t in sel))
+        chosen = menu.exec(QtGui.QCursor.pos())
+        if chosen is None:
+            return
+        target = chosen.data()
+        moved = [t for t in sel if t.pane != target]
         for t in sel:
             t.pane = target
         self._refresh_traces_table()
         self._rebuild_panes()
+        self.statusBar().showMessage(
+            self.t("merge.status", len(moved), target))
 
     def remove_selected(self):
         sel = set(self.selected_traces())
@@ -1097,9 +1394,7 @@ class MainWindow(QtWidgets.QMainWindow):
         active = {(t.raw.uid, t.var.index) for t in self.traces}
         self._suppress_tree_signal = True
         for i in range(self.tree.topLevelItemCount()):
-            root = self.tree.topLevelItem(i)
-            for j in range(root.childCount()):
-                child = root.child(j)
+            for child in self._iter_tree(self.tree.topLevelItem(i)):
                 meta = child.data(0, Qt.ItemDataRole.UserRole)
                 if meta and meta[0] == "var":
                     on = (meta[1], meta[2]) in active
@@ -1107,6 +1402,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         0, Qt.CheckState.Checked if on
                         else Qt.CheckState.Unchecked)
         self._suppress_tree_signal = False
+        self._update_group_states()
 
     # -- traces table --------------------------------------------------
     def _refresh_traces_table(self):
